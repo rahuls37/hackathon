@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: hackrx-rag-api
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: HOST
+        value: "0.0.0.0"
+      - key: DATABASE_PATH
+        value: "hackrx.db"
+      - key: CHROMA_PERSIST_DIRECTORY
+        value: "./chroma_db"
+      - key: LOG_LEVEL
+        value: "INFO"
+    healthCheckPath: /health
