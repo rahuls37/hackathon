@@ -11,6 +11,11 @@
       "dest": "main.py"
     }
   ],
+  "functions": {
+    "main.py": {
+      "excludeFiles": "{*.db,*.sqlite*,__pycache__/**,*.pyc,*.pyo,tests/**,docs/**,examples/**,*.md,*.txt,*.log,temp/**,.git/**,.pytest_cache/**}"
+    }
+  },
   "env": {
     "PORT": "8000"
   }
