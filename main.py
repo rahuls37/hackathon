@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 import httpx
 import PyPDF2
-import chromadb
+# Removed chromadb to reduce bundle size
 import google.generativeai as genai
 import os
 from typing import List
@@ -36,12 +36,9 @@ else:
     logger.warning("⚠️ No Gemini API key provided")
     model = None
 
-# Initialize ChromaDB (in-memory for serverless)
-chroma_client = chromadb.Client()
-collection = chroma_client.get_or_create_collection(name="documents")
-
-# In-memory cache for processed documents (serverless compatible)
+# In-memory storage for documents and chunks (lightweight alternative to ChromaDB)
 processed_documents_cache = {}
+document_chunks_cache = {}  # Store chunks for text search
 
 # Pydantic models
 class QueryRequest(BaseModel):
@@ -83,23 +80,13 @@ def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[st
     return chunks
 
 def store_document_chunks(doc_id: str, chunks: List[str]):
-    """Store document chunks in ChromaDB"""
+    """Store document chunks in memory for lightweight text search"""
     try:
-        # Clear existing chunks for this document
-        try:
-            collection.delete(where={"document_id": doc_id})
-        except:
-            pass  # Collection might be empty
-        
-        # Add new chunks
-        ids = [f"{doc_id}_chunk_{i}" for i in range(len(chunks))]
-        metadatas = [{"document_id": doc_id, "chunk_index": i} for i in range(len(chunks))]
-        
-        collection.add(
-            documents=chunks,
-            ids=ids,
-            metadatas=metadatas
-        )
+        # Store chunks in memory with metadata
+        document_chunks_cache[doc_id] = [
+            {"text": chunk, "chunk_index": i, "document_id": doc_id}
+            for i, chunk in enumerate(chunks)
+        ]
         logger.info(f"Stored {len(chunks)} chunks for document {doc_id}")
     except Exception as e:
         logger.error(f"Error storing chunks: {e}")
@@ -206,49 +193,55 @@ def generate_semantic_queries(question: str, entities: dict) -> List[str]:
     
     return list(set(queries))  # Remove duplicates
 
-def retrieve_relevant_chunks(question: str, top_k: int = 10) -> List[str]:
-    """Enhanced retrieval with entity extraction and multiple query strategies"""
+def retrieve_relevant_chunks(question: str, doc_id: str, top_k: int = 10) -> List[str]:
+    """Lightweight text search for relevant chunks"""
     try:
-        # Extract entities from the question
+        if doc_id not in document_chunks_cache:
+            return []
+        
+        chunks = document_chunks_cache[doc_id]
+        question_lower = question.lower()
+        
+        # Extract entities for better matching
         entities = extract_query_entities(question)
-        logger.info(f"Extracted entities: {entities}")
         
-        # Generate multiple semantic queries
-        semantic_queries = generate_semantic_queries(question, entities)
-        logger.info(f"Generated queries: {semantic_queries[:5]}...")  # Log first 5
+        # Score chunks based on keyword matching
+        scored_chunks = []
+        for chunk_data in chunks:
+            chunk_text = chunk_data["text"].lower()
+            score = 0
+            
+            # Score based on question words
+            question_words = question_lower.split()
+            for word in question_words:
+                if len(word) > 2:  # Skip very short words
+                    score += chunk_text.count(word) * 2
+            
+            # Score based on extracted entities
+            for entity_type, entity_value in entities.items():
+                if entity_value:
+                    entity_str = str(entity_value).lower()
+                    score += chunk_text.count(entity_str) * 3
+            
+            # Score based on common insurance terms
+            insurance_terms = ['coverage', 'waiting period', 'exclusion', 'benefit', 'claim', 'policy', 'premium']
+            for term in insurance_terms:
+                if term in question_lower and term in chunk_text:
+                    score += 2
+            
+            if score > 0:
+                scored_chunks.append((score, chunk_data["text"]))
         
-        all_chunks = set()
+        # Sort by score and return top chunks
+        scored_chunks.sort(key=lambda x: x[0], reverse=True)
+        relevant_chunks = [chunk[1] for chunk in scored_chunks[:top_k]]
         
-        # Query with multiple semantic variations
-        for query in semantic_queries:
-            try:
-                results = collection.query(
-                    query_texts=[query],
-                    n_results=min(top_k, 5)  # Limit per query to avoid overwhelming
-                )
-                if results['documents'] and results['documents'][0]:
-                    all_chunks.update(results['documents'][0])
-            except Exception as e:
-                logger.warning(f"Query failed for '{query}': {e}")
-                continue
-        
-        # Convert back to list and limit
-        chunks_list = list(all_chunks)[:top_k]
-        logger.info(f"Retrieved {len(chunks_list)} unique chunks")
-        
-        return chunks_list
+        logger.info(f"Retrieved {len(relevant_chunks)} relevant chunks using text search")
+        return relevant_chunks
         
     except Exception as e:
-        logger.error(f"Error in enhanced retrieval: {e}")
-        # Fallback to simple retrieval
-        try:
-            results = collection.query(
-                query_texts=[question],
-                n_results=top_k
-            )
-            return results['documents'][0] if results['documents'] else []
-        except:
-            return []
+        logger.error(f"Error in text search retrieval: {e}")
+        return []
 
 async def generate_answer(question: str, context: str) -> str:
     """Generate intelligent answer using enhanced prompting"""
@@ -377,7 +370,7 @@ async def process_questions(request: QueryRequest, http_request: Request):
             logger.info(f"Processing question: {question[:50]}...")
             
             # Retrieve relevant chunks
-            relevant_chunks = retrieve_relevant_chunks(question)
+            relevant_chunks = retrieve_relevant_chunks(question, doc_id)
             context = "\n\n".join(relevant_chunks)
             
             # Generate answer
