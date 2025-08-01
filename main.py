@@ -331,13 +331,19 @@ Answer:"""
 # API Routes
 @app.get("/")
 async def root():
-    return {"message": "HackRx 6.0 - RAG Q&A API is running!"}
+    return {"message": "HackRx 6.0 - RAG Q&A API is running!", "version": "1.0.0", "endpoints": {"/health": "Health check", "/api/v1/hackrx/run": "Main processing endpoint"}}
 
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "service": "HackRx RAG API"}
 
+# Legacy endpoint for backward compatibility
 @app.post("/hackrx/run", response_model=QueryResponse)
+async def process_questions_legacy(request: QueryRequest, http_request: Request):
+    """Legacy endpoint - redirects to new API version"""
+    return await process_questions(request, http_request)
+
+@app.post("/api/v1/hackrx/run", response_model=QueryResponse)
 async def process_questions(request: QueryRequest, http_request: Request):
     """Main endpoint to process documents and answer questions"""
     try:
