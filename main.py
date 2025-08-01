@@ -4,7 +4,6 @@ import httpx
 import PyPDF2
 import chromadb
 import google.generativeai as genai
-import sqlite3
 import os
 from typing import List
 import uuid
@@ -37,22 +36,12 @@ else:
     logger.warning("⚠️ No Gemini API key provided")
     model = None
 
-# Initialize ChromaDB
+# Initialize ChromaDB (in-memory for serverless)
 chroma_client = chromadb.Client()
 collection = chroma_client.get_or_create_collection(name="documents")
 
-# SQLite database for metadata
-conn = sqlite3.connect('hackrx.db', check_same_thread=False)
-cursor = conn.cursor()
-cursor.execute('''
-    CREATE TABLE IF NOT EXISTS processed_documents (
-        id TEXT PRIMARY KEY,
-        url TEXT,
-        content TEXT,
-        processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-''')
-conn.commit()
+# In-memory cache for processed documents (serverless compatible)
+processed_documents_cache = {}
 
 # Pydantic models
 class QueryRequest(BaseModel):
@@ -358,13 +347,10 @@ async def process_questions(request: QueryRequest, http_request: Request):
         # Generate document ID
         doc_id = str(uuid.uuid4())
         
-        # Check if document was already processed
-        cursor.execute("SELECT content FROM processed_documents WHERE url = ?", (request.documents,))
-        result = cursor.fetchone()
-        
-        if result:
+        # Check if document was already processed (using in-memory cache)
+        if request.documents in processed_documents_cache:
             logger.info("Using cached document")
-            document_text = result[0]
+            document_text = processed_documents_cache[request.documents]
         else:
             # Download and process document
             logger.info(f"Downloading document from: {request.documents}")
@@ -377,12 +363,8 @@ async def process_questions(request: QueryRequest, http_request: Request):
             if not document_text.strip():
                 raise HTTPException(status_code=400, detail="Could not extract text from the document")
             
-            # Store in database
-            cursor.execute(
-                "INSERT INTO processed_documents (id, url, content) VALUES (?, ?, ?)",
-                (doc_id, request.documents, document_text)
-            )
-            conn.commit()
+            # Store in cache
+            processed_documents_cache[request.documents] = document_text
         
         # Chunk and store document
         logger.info("Chunking document")
